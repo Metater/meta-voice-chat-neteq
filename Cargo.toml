@@ -1,0 +1,11 @@
+[package]
+name = "meta-voice-chat-neteq"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+neteq = "0.7.1"
+once_cell = "1.21.3"
+
+[lib]
+crate-type = ["cdylib"]
