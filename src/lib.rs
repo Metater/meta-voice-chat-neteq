@@ -1,5 +1,4 @@
 use neteq::{AudioPacket, NetEq, NetEqConfig, RtpHeader};
-use std::sync::{Arc, Mutex};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn create_neteq(
@@ -9,7 +8,7 @@ pub extern "C" fn create_neteq(
     max_delay_ms: u32,
     min_delay_ms: u32,
     additional_delay_ms: u32,
-) -> *mut Arc<Mutex<NetEq>> {
+) -> *mut NetEq {
     let config = NetEqConfig {
         sample_rate,
         channels,
@@ -21,13 +20,13 @@ pub extern "C" fn create_neteq(
     };
 
     match NetEq::new(config) {
-        Ok(neteq) => Box::into_raw(Box::new(Arc::new(Mutex::new(neteq)))),
+        Ok(neteq) => Box::into_raw(Box::new(neteq)),
         Err(_) => std::ptr::null_mut(),
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn free_neteq(ptr: *mut Arc<Mutex<NetEq>>) {
+pub extern "C" fn free_neteq(ptr: *mut NetEq) {
     if !ptr.is_null() {
         unsafe {
             let _ = Box::from_raw(ptr);
@@ -37,7 +36,7 @@ pub extern "C" fn free_neteq(ptr: *mut Arc<Mutex<NetEq>>) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn insert_packet(
-    ptr: *mut Arc<Mutex<NetEq>>,
+    ptr: *mut NetEq,
     sequence_number: u16,
     timestamp: u32,
     samples: *mut f32,
@@ -50,8 +49,7 @@ pub extern "C" fn insert_packet(
         return;
     }
 
-    let neteq_arc = unsafe { &*ptr };
-    let mut neteq = neteq_arc.lock().unwrap();
+    let neteq = unsafe { &mut *ptr };
 
     let header = RtpHeader::new(sequence_number, timestamp, 12345, 96, false);
 
@@ -80,17 +78,16 @@ pub extern "C" fn insert_packet(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn get_audio(
-    ptr: *mut Arc<Mutex<NetEq>>,
-    samples: *mut f32,
-    samples_len: i32,
-) -> i32 {
+pub extern "C" fn get_audio(ptr: *mut NetEq, samples: *mut f32, samples_len: i32) -> i32 {
     if ptr.is_null() {
         return 0;
     }
 
-    let neteq_arc = unsafe { &*ptr };
-    let mut neteq = neteq_arc.lock().unwrap();
+    if samples.is_null() || samples_len <= 0 {
+        return 0;
+    }
+
+    let neteq = unsafe { &mut *ptr };
 
     let frame = match neteq.get_audio() {
         Ok(f) => f,
@@ -106,12 +103,11 @@ pub extern "C" fn get_audio(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn current_buffer_size_ms(ptr: *mut Arc<Mutex<NetEq>>) -> u32 {
+pub extern "C" fn current_buffer_size_ms(ptr: *mut NetEq) -> u32 {
     if ptr.is_null() {
         return 0;
     }
-    let neteq_arc = unsafe { &*ptr };
-    let neteq = neteq_arc.lock().unwrap();
 
+    let neteq = unsafe { &mut *ptr };
     neteq.current_buffer_size_ms()
 }
