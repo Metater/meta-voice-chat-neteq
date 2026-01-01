@@ -24,6 +24,9 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-linux-android
             name: android-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-gnu
+            name: windows-x86_64
     
     runs-on: ${{ matrix.os }}
     
@@ -44,6 +47,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libasound2-dev
+      
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+          choco install msys2
+          $env:PATH = "C:\tools\msys64\mingw64\bin;$env:PATH"
+          echo "C:\tools\msys64\mingw64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        shell: pwsh
       
       - name: Install cross-compilation tools (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
@@ -78,7 +90,6 @@ jobs:
           linker = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
           CARGOEOF
           
-          # Replace the placeholder with actual value
           sed -i "s|\$ANDROID_NDK_HOME|$ANDROID_NDK_HOME|g" .cargo/config.toml
           
           echo "CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
@@ -90,8 +101,13 @@ jobs:
         run: |
           cargo fetch
           
-          if [ -d "$HOME/.cargo/registry/src" ]; then
-            find "$HOME/.cargo/registry/src" -name "audiopus_sys-*" -type d | while read dir; do
+          registry_path="${HOME}/.cargo/registry/src"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            registry_path="${USERPROFILE}/.cargo/registry/src"
+          fi
+          
+          if [ -d "$registry_path" ]; then
+            find "$registry_path" -name "audiopus_sys-*" -type d | while read dir; do
               cmakefile="$dir/opus/CMakeLists.txt"
               if [ -f "$cmakefile" ]; then
                 echo "Patching $cmakefile"
