@@ -47,14 +47,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake libasound2-dev
       
-      - name: Install cross-compilation tools (Linux ARM)
+      - name: Install cross-compilation tools (Linux ARM) using cross
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64
-          echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+          cargo install cross --git https://github.com/cross-rs/cross
       
       - name: Setup Android NDK
         if: matrix.target == 'aarch64-linux-android'
@@ -68,9 +64,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake
           echo "CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
+          echo "CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++" >> $GITHUB_ENV
           echo "AR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
       
       - name: Patch audiopus CMakeLists.txt (pre-build)
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: |
           # Download dependencies first to get audiopus_sys
           cargo fetch
@@ -87,10 +86,18 @@ jobs:
           fi
         shell: bash
       
-      - name: Build
+      - name: Build (standard targets)
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: cargo build --release --target ${{ matrix.target }} --lib
         env:
           CMAKE_ARGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
+      
+      - name: Build (Linux ARM64 using cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          cross build --release --target ${{ matrix.target }} --lib
+        env:
+          CROSS_CONTAINER_OPTS: "--env CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
       
       - name: Prepare artifacts
         run: |
