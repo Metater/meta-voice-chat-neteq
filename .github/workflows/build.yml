@@ -41,19 +41,20 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install cmake
       
-      - name: Install dependencies (Linux)
+      - name: Install dependencies (Linux x86_64)
         if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake
+          sudo apt-get install -y cmake libasound2-dev
       
       - name: Install cross-compilation tools (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libasound2-dev:arm64
           echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
       
       - name: Setup Android NDK
         if: matrix.target == 'aarch64-linux-android'
@@ -64,6 +65,8 @@ jobs:
       - name: Configure Android environment
         if: matrix.target == 'aarch64-linux-android'
         run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake
           echo "CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
           echo "AR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
       
