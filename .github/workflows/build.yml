@@ -96,18 +96,13 @@ jobs:
           echo "CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++" >> $GITHUB_ENV
           echo "AR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
       
-      - name: Patch audiopus CMakeLists.txt (pre-build)
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+      - name: Patch audiopus CMakeLists.txt (pre-build - Unix)
+        if: matrix.target != 'aarch64-unknown-linux-gnu' && runner.os != 'Windows'
         run: |
           cargo fetch
           
-          registry_path="${HOME}/.cargo/registry/src"
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            registry_path="${USERPROFILE}/.cargo/registry/src"
-          fi
-          
-          if [ -d "$registry_path" ]; then
-            find "$registry_path" -name "audiopus_sys-*" -type d | while read dir; do
+          if [ -d "$HOME/.cargo/registry/src" ]; then
+            find "$HOME/.cargo/registry/src" -name "audiopus_sys-*" -type d | while read dir; do
               cmakefile="$dir/opus/CMakeLists.txt"
               if [ -f "$cmakefile" ]; then
                 echo "Patching $cmakefile"
@@ -116,6 +111,25 @@ jobs:
             done
           fi
         shell: bash
+      
+      - name: Patch audiopus CMakeLists.txt (pre-build - Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cargo fetch
+          
+          $registryPath = "$env:USERPROFILE\.cargo\registry\src"
+          if (Test-Path $registryPath) {
+            Get-ChildItem -Path $registryPath -Directory -Filter "audiopus_sys-*" -Recurse | ForEach-Object {
+              $cmakeFile = Join-Path $_.FullName "opus\CMakeLists.txt"
+              if (Test-Path $cmakeFile) {
+                Write-Host "Patching $cmakeFile"
+                $content = Get-Content $cmakeFile -Raw
+                $content = $content -replace 'cmake_minimum_required\(VERSION [0-9.]+\)', 'cmake_minimum_required(VERSION 3.5)'
+                $content | Set-Content $cmakeFile -NoNewline
+              }
+            }
+          }
+        shell: pwsh
       
       - name: Build (standard targets)
         if: matrix.target != 'aarch64-unknown-linux-gnu'
@@ -135,12 +149,12 @@ jobs:
           find target/${{ matrix.target }}/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" -o -name "*.rlib" \) -exec cp {} artifacts/${{ matrix.name }}/ \; 2>/dev/null || true
         shell: bash
       
-      - name: Upload artifacts
+      - name: Upload build artifacts (temporary)
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.name }}
           path: artifacts/${{ matrix.name }}/*
-          if-no-files-found: warn
+          retention-days: 1
 
   combine-artifacts:
     needs: build
@@ -160,7 +174,6 @@ jobs:
             cp -r "$platform_dir"/* "combined/$platform_name/" 2>/dev/null || true
           done
           
-          # Create a README
           cat > combined/README.md << 'EOF'
           # NetEQ Wrapper Builds
           
@@ -180,3 +193,8 @@ jobs:
         with:
           name: all-platforms
           path: combined/
+      
+      - name: Delete temporary artifacts
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: build-*
