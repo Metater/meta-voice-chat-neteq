@@ -7,10 +7,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             name: macos-intel
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-darwin
             name: macos-arm
           - os: ubuntu-latest
@@ -19,7 +19,7 @@ jobs:
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             name: linux-arm64
-          - os: macos-latest
+          - os: macos-14
             target: aarch64-apple-ios
             name: ios-arm64
           - os: ubuntu-latest
@@ -29,33 +29,52 @@ jobs:
     runs-on: ${{ matrix.os }}
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.target }}
-          override: true
+          targets: ${{ matrix.target }}
+      
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake
       
       - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake
+      
+      - name: Install cross-compilation tools (Linux ARM)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
       
-      - name: Install Android NDK
+      - name: Setup Android NDK
+        if: matrix.target == 'aarch64-linux-android'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+      
+      - name: Configure Android environment
         if: matrix.target == 'aarch64-linux-android'
         run: |
-          wget https://dl.google.com/android/repository/android-ndk-r25c-linux.zip
-          unzip android-ndk-r25c-linux.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r25c" >> $GITHUB_ENV
+          echo "CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
+          echo "AR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
       
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} --lib
+      
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          find target/${{ matrix.target }}/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" \) -exec cp {} artifacts/ \;
       
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: target/${{ matrix.target }}/release/*.so target/${{ matrix.target }}/release/*.dylib target/${{ matrix.target }}/release/*.a
+          path: artifacts/*
+          if-no-files-found: warn
