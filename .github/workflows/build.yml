@@ -131,13 +131,52 @@ jobs:
       
       - name: Prepare artifacts
         run: |
-          mkdir -p artifacts
-          find target/${{ matrix.target }}/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" -o -name "*.rlib" \) -exec cp {} artifacts/ \; 2>/dev/null || true
+          mkdir -p artifacts/${{ matrix.name }}
+          find target/${{ matrix.target }}/release -maxdepth 1 -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.a" -o -name "*.dll" -o -name "*.rlib" \) -exec cp {} artifacts/${{ matrix.name }}/ \; 2>/dev/null || true
         shell: bash
       
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: artifacts/*
+          name: build-${{ matrix.name }}
+          path: artifacts/${{ matrix.name }}/*
           if-no-files-found: warn
+
+  combine-artifacts:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+      
+      - name: Combine artifacts
+        run: |
+          mkdir -p combined
+          for platform_dir in all-artifacts/build-*; do
+            platform_name=$(basename "$platform_dir" | sed 's/build-//')
+            mkdir -p "combined/$platform_name"
+            cp -r "$platform_dir"/* "combined/$platform_name/" 2>/dev/null || true
+          done
+          
+          # Create a README
+          cat > combined/README.md << 'EOF'
+          # NetEQ Wrapper Builds
+          
+          This package contains compiled libraries for multiple platforms:
+          
+          - macos-intel/ - macOS Intel (x86_64)
+          - macos-arm/ - macOS Apple Silicon (ARM64)
+          - linux-x86_64/ - Linux x86_64
+          - linux-arm64/ - Linux ARM64
+          - ios-arm64/ - iOS ARM64
+          - android-arm64/ - Android ARM64
+          - windows-x86_64/ - Windows x86_64
+          EOF
+      
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-platforms
+          path: combined/
