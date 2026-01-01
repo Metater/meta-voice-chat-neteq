@@ -47,10 +47,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake libasound2-dev
       
-      - name: Install cross-compilation tools (Linux ARM) using cross
+      - name: Install cross-compilation tools (Linux ARM)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           cargo install cross --git https://github.com/cross-rs/cross
+          
+          # Create custom Cross.toml to install ALSA in the container
+          cat > Cross.toml << 'EOF'
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install -y libasound2-dev:arm64"
+]
+EOF
       
       - name: Setup Android NDK
         if: matrix.target == 'aarch64-linux-android'
@@ -63,18 +73,24 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake
+          
+          # Set up cargo config for Android
+          mkdir -p .cargo
+          cat > .cargo/config.toml << EOF
+[target.aarch64-linux-android]
+ar = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+linker = "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+EOF
+          
           echo "CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang" >> $GITHUB_ENV
           echo "CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++" >> $GITHUB_ENV
           echo "AR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
-          echo "RANLIB=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib" >> $GITHUB_ENV
       
       - name: Patch audiopus CMakeLists.txt (pre-build)
         if: matrix.target != 'aarch64-unknown-linux-gnu'
         run: |
-          # Download dependencies first to get audiopus_sys
           cargo fetch
           
-          # Find and patch the CMakeLists.txt
           if [ -d "$HOME/.cargo/registry/src" ]; then
             find "$HOME/.cargo/registry/src" -name "audiopus_sys-*" -type d | while read dir; do
               cmakefile="$dir/opus/CMakeLists.txt"
@@ -94,8 +110,7 @@ jobs:
       
       - name: Build (Linux ARM64 using cross)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          cross build --release --target ${{ matrix.target }} --lib
+        run: cross build --release --target ${{ matrix.target }} --lib
         env:
           CROSS_CONTAINER_OPTS: "--env CMAKE_ARGS=-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
       
