@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+fdaf-aec = "0.1.0"
 neteq = "0.7.1"
 
 [lib]
