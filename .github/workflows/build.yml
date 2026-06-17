@@ -39,7 +39,7 @@ jobs:
             target: aarch64-apple-darwin
             tool: cargo
           - name: macos-x86_64
-            os: macos-13
+            os: macos-latest
             target: x86_64-apple-darwin
             tool: cargo
 
@@ -52,7 +52,7 @@ jobs:
             target: aarch64-apple-ios-sim
             tool: cargo
           - name: ios-x86_64-simulator
-            os: macos-13
+            os: macos-latest
             target: x86_64-apple-ios
             tool: cargo
 
