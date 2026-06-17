@@ -120,15 +120,19 @@ jobs:
           case '${{ matrix.target }}' in
             aarch64-linux-android)
               clang_target="aarch64-linux-android${{ matrix.api }}"
+              rustflags='rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]'
               ;;
             armv7-linux-androideabi)
               clang_target="armv7a-linux-androideabi${{ matrix.api }}"
+              rustflags=""
               ;;
             x86_64-linux-android)
               clang_target="x86_64-linux-android${{ matrix.api }}"
+              rustflags=""
               ;;
             i686-linux-android)
               clang_target="i686-linux-android${{ matrix.api }}"
+              rustflags=""
               ;;
             *)
               echo "Unsupported Android target: ${{ matrix.target }}" >&2
@@ -140,6 +144,7 @@ jobs:
           [target.${{ matrix.target }}]
           linker = "$toolchain/$clang_target-clang"
           ar = "$toolchain/llvm-ar"
+          $rustflags
           EOF
 
           echo "CC_${rust_target_env}=$toolchain/$clang_target-clang" >> "$GITHUB_ENV"
@@ -201,17 +206,52 @@ jobs:
       - name: Combine artifacts
         shell: bash
         run: |
-          mkdir -p combined
+          mkdir -p combined/platforms combined/unity/Assets/Plugins
           for artifact_dir in all-artifacts/meta-voice-chat-neteq-*; do
             platform_name=$(basename "$artifact_dir" | sed 's/^meta-voice-chat-neteq-//')
-            mkdir -p "combined/$platform_name"
-            cp -R "$artifact_dir"/. "combined/$platform_name/"
+            mkdir -p "combined/platforms/$platform_name"
+            cp -R "$artifact_dir"/. "combined/platforms/$platform_name/"
           done
+
+          copy_first_match() {
+            local source_dir="$1"
+            local dest_dir="$2"
+            shift 2
+            mkdir -p "$dest_dir"
+            for pattern in "$@"; do
+              find "$source_dir" -maxdepth 1 -type f -name "$pattern" -exec cp {} "$dest_dir/" \;
+            done
+          }
+
+          copy_first_match combined/platforms/windows-x86_64 combined/unity/Assets/Plugins/Windows/x86_64 "*.dll" "*.pdb"
+          copy_first_match combined/platforms/windows-i686 combined/unity/Assets/Plugins/Windows/x86 "*.dll" "*.pdb"
+          copy_first_match combined/platforms/windows-arm64 combined/unity/Assets/Plugins/Windows/ARM64 "*.dll" "*.pdb"
+
+          copy_first_match combined/platforms/macos-arm64 combined/unity/Assets/Plugins/macOS/arm64 "*.dylib"
+          copy_first_match combined/platforms/macos-x86_64 combined/unity/Assets/Plugins/macOS/x86_64 "*.dylib"
+
+          copy_first_match combined/platforms/ios-arm64-device combined/unity/Assets/Plugins/iOS/arm64 "*.dylib"
+          copy_first_match combined/platforms/ios-arm64-simulator combined/unity/Assets/Plugins/iOS/Simulator/arm64 "*.dylib"
+          copy_first_match combined/platforms/ios-x86_64-simulator combined/unity/Assets/Plugins/iOS/Simulator/x86_64 "*.dylib"
+
+          copy_first_match combined/platforms/linux-x86_64-gnu combined/unity/Assets/Plugins/Linux/x86_64 "*.so"
+          copy_first_match combined/platforms/linux-arm64-gnu combined/unity/Assets/Plugins/Linux/arm64 "*.so"
+          copy_first_match combined/platforms/linux-armv7-gnu combined/unity/Assets/Plugins/Linux/armv7 "*.so"
+
+          copy_first_match combined/platforms/android-arm64 combined/unity/Assets/Plugins/Android/libs/arm64-v8a "*.so"
+          copy_first_match combined/platforms/android-armv7 combined/unity/Assets/Plugins/Android/libs/armeabi-v7a "*.so"
+          copy_first_match combined/platforms/android-x86_64 combined/unity/Assets/Plugins/Android/libs/x86_64 "*.so"
+          copy_first_match combined/platforms/android-x86 combined/unity/Assets/Plugins/Android/libs/x86 "*.so"
 
           cat > combined/README.md <<'EOF'
           # meta-voice-chat-neteq Builds
 
           Release cdylib builds produced by GitHub Actions.
+
+          Contents:
+          - platforms/ contains the raw artifacts exactly as produced by each matrix job.
+          - unity/Assets/Plugins/ is arranged for copying into a Unity project.
+          - meta-voice-chat-neteq-unity-plugins.zip contains the Unity plugin tree.
 
           Included platform groups:
           - windows-x86_64, windows-i686, windows-arm64
@@ -221,7 +261,20 @@ jobs:
           - android-arm64, android-armv7, android-x86_64, android-x86
 
           This project does not depend on Opus, CMake, ALSA, CPAL, or WASM/browser tooling.
+          Android arm64 is linked with `-Wl,-z,max-page-size=16384` for 16 KB page-size compatibility.
           EOF
+
+          cat > combined/unity/README.md <<'EOF'
+          # Unity Import
+
+          Copy the `Assets` folder from this directory into your Unity project, or unzip
+          `meta-voice-chat-neteq-unity-plugins.zip` at the root of your Unity project.
+
+          Android libraries are placed under `Assets/Plugins/Android/libs/<abi>/`.
+          Desktop and Apple platform libraries are grouped under `Assets/Plugins/<platform>/`.
+          EOF
+
+          (cd combined/unity && zip -r ../meta-voice-chat-neteq-unity-plugins.zip Assets README.md)
 
       - name: Upload combined artifact
         uses: actions/upload-artifact@v7
