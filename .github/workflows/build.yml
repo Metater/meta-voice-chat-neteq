@@ -11,7 +11,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -92,9 +91,141 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.tool == 'cross'
+        uses: taiki-e/install-action@cross
+
+      - name: Setup Android NDK
+        if: matrix.tool == 'android'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      - name: Configure Android linker
+        if: matrix.tool == 'android'
+        shell: bash
+        run: |
+          mkdir -p .cargo
+          host_tag=linux-x86_64
+          toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$host_tag/bin"
+          rust_target_env=$(printf '%s' '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')
+
+          case '${{ matrix.target }}' in
+            aarch64-linux-android)
+              clang_target="aarch64-linux-android${{ matrix.api }}"
+              ;;
+            armv7-linux-androideabi)
+              clang_target="armv7a-linux-androideabi${{ matrix.api }}"
+              ;;
+            x86_64-linux-android)
+              clang_target="x86_64-linux-android${{ matrix.api }}"
+              ;;
+            i686-linux-android)
+              clang_target="i686-linux-android${{ matrix.api }}"
+              ;;
+            *)
+              echo "Unsupported Android target: ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
+
+          cat > .cargo/config.toml <<EOF
+          [target.${{ matrix.target }}]
+          linker = "$toolchain/$clang_target-clang"
+          ar = "$toolchain/llvm-ar"
+          EOF
+
+          echo "CC_${rust_target_env}=$toolchain/$clang_target-clang" >> "$GITHUB_ENV"
+          echo "AR_${rust_target_env}=$toolchain/llvm-ar" >> "$GITHUB_ENV"
+
+      - name: Build
+        if: matrix.tool == 'cargo'
+        run: cargo build --release --target ${{ matrix.target }} --lib
+
+      - name: Build with cross
+        if: matrix.tool == 'cross'
+        run: cross build --release --target ${{ matrix.target }} --lib
+
+      - name: Build for Android
+        if: matrix.tool == 'android'
+        run: cargo build --release --target ${{ matrix.target }} --lib
+
+      - name: Prepare artifacts
+        shell: pwsh
+        run: |
+          $artifactDir = "artifacts/${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
+          $releaseDir = "target/${{ matrix.target }}/release"
+          $patterns = @("*.dll", "*.dll.lib", "*.pdb", "*.so", "*.dylib")
+          foreach ($pattern in $patterns) {
+            Get-ChildItem -Path $releaseDir -Filter $pattern -File -ErrorAction SilentlyContinue |
+              Copy-Item -Destination $artifactDir -Force
+          }
+
+          @"
+          target=${{ matrix.target }}
+          profile=release
+          crate=meta-voice-chat-neteq
+          "@ | Set-Content -Path "$artifactDir/build-info.txt"
+
+          if (-not (Get-ChildItem -Path $artifactDir -File | Where-Object { $_.Name -ne 'build-info.txt' })) {
+            Write-Error "No dynamic library artifact was found in $releaseDir"
+          }
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: meta-voice-chat-neteq-${{ matrix.name }}
+          path: artifacts/${{ matrix.name }}/*
+          if-no-files-found: error
+
+  combine-artifacts:
+    name: Combine artifacts
+    needs: build
+    runs-on: ubuntu-latest
+    if: always() && needs.build.result == 'success'
+    steps:
+      - name: Download platform artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: all-artifacts
+
+      - name: Combine artifacts
+        shell: bash
+        run: |
+          mkdir -p combined
+          for artifact_dir in all-artifacts/meta-voice-chat-neteq-*; do
+            platform_name=$(basename "$artifact_dir" | sed 's/^meta-voice-chat-neteq-//')
+            mkdir -p "combined/$platform_name"
+            cp -R "$artifact_dir"/. "combined/$platform_name/"
+          done
+
+          cat > combined/README.md <<'EOF'
+          # meta-voice-chat-neteq Builds
+
+          Release cdylib builds produced by GitHub Actions.
+
+          Included platform groups:
+          - windows-x86_64, windows-i686, windows-arm64
+          - macos-arm64, macos-x86_64
+          - ios-arm64-device, ios-arm64-simulator, ios-x86_64-simulator
+          - linux-x86_64-gnu, linux-arm64-gnu, linux-armv7-gnu
+          - android-arm64, android-armv7, android-x86_64, android-x86
+
+          This project does not depend on Opus, CMake, ALSA, CPAL, or WASM/browser tooling.
+          EOF
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: meta-voice-chat-neteq-all-platforms
+          path: combined/
+          if-no-files-found: error
