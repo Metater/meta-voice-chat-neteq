@@ -24,7 +24,6 @@
 
 pub mod buffer;
 pub mod buffer_level_filter;
-pub mod codec;
 pub mod delay_manager;
 pub mod error;
 pub mod expand;
@@ -37,15 +36,9 @@ pub mod time_stretch;
 
 pub use statistics::q14;
 
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub mod web;
-
 pub use error::{NetEqError, Result};
 pub use neteq::{NetEq, NetEqConfig, NetEqStats, Operation};
 pub use packet::{AudioPacket, RtpHeader};
-
-#[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub use web::WebNetEq;
 
 #[cfg(test)]
 mod tests {

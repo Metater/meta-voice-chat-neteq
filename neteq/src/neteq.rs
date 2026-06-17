@@ -17,9 +17,7 @@
  */
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use web_time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 use crate::buffer::{BufferReturnCode, PacketBuffer, SmartFlushConfig};
 use crate::buffer_level_filter::BufferLevelFilter;
@@ -67,8 +65,6 @@ pub struct NetEqConfig {
     pub additional_delay_ms: u32,
     /// Disable time stretching (for testing)
     pub for_test_no_time_stretching: bool,
-    /// Bypass NetEQ processing and decode packets directly (for A/B testing)
-    pub bypass_mode: bool,
     /// Delay manager configuration
     pub delay_config: DelayConfig,
     /// Smart flushing configuration
@@ -85,7 +81,6 @@ impl Default for NetEqConfig {
             min_delay_ms: 0,
             additional_delay_ms: 0,
             for_test_no_time_stretching: false,
-            bypass_mode: false,
             delay_config: DelayConfig::default(),
             smart_flush_config: SmartFlushConfig::default(),
         }
@@ -195,10 +190,6 @@ pub struct NetEq {
     frame_timestamp: u32,
     /// Samples remaining from a previously decoded packet (to support 20 ms packets → 10 ms frames)
     leftover_samples: Vec<f32>,
-    /// Map RTP payload-type → audio decoder instance.
-    decoders: HashMap<u8, Box<dyn crate::codec::AudioDecoder + Send>>,
-    /// Audio queue for bypass mode (direct decoding without jitter buffer)
-    bypass_audio_queue: VecDeque<f32>,
     /// Rolling counters for packets-per-second measurement
     packets_received_this_second: u32,
     last_packets_second_instant: Instant,
@@ -271,8 +262,6 @@ impl NetEq {
             consecutive_expands: 0,
             frame_timestamp: 0,
             leftover_samples: Vec::new(),
-            decoders: HashMap::new(),
-            bypass_audio_queue: VecDeque::new(),
             packets_received_this_second: 0,
             last_packets_second_instant: Instant::now(),
             packets_per_sec_snapshot: 0,
@@ -287,29 +276,6 @@ impl NetEq {
         self.packets_received_this_second = self.packets_received_this_second.saturating_add(1);
         self.maybe_roll_packet_rate();
 
-        if self.config.bypass_mode {
-            // Bypass mode: decode packet immediately and queue audio
-            if let Some(decoder) = self.decoders.get_mut(&packet.header.payload_type) {
-                match decoder.decode(&packet.payload) {
-                    Ok(pcm_samples) => {
-                        let sample_count = pcm_samples.len();
-                        self.bypass_audio_queue.extend(pcm_samples);
-                        log::trace!("Bypass mode: decoded {sample_count} samples");
-                    }
-                    Err(e) => {
-                        log::warn!("Bypass mode decode error: {e:?}");
-                    }
-                }
-            } else {
-                log::warn!(
-                    "No decoder registered for payload type {} in bypass mode",
-                    packet.header.payload_type
-                );
-            }
-            return Ok(());
-        }
-
-        // Normal NetEQ processing
         // Update delay manager
         self.delay_manager
             .update(packet.header.timestamp, packet.sample_rate, false)?;
@@ -342,40 +308,6 @@ impl NetEq {
         // Ensure packet-rate snapshot rolls even when no packets arrive
         // This prevents stale non-zero values when the peer stops sending
         self.maybe_roll_packet_rate();
-        if self.config.bypass_mode {
-            // Bypass mode: return samples directly from queue
-            let mut frame = AudioFrame::new(
-                self.config.sample_rate,
-                self.config.channels,
-                self.output_frame_size_samples / self.config.channels as usize,
-            );
-
-            let samples_needed = self.output_frame_size_samples;
-            let mut filled = 0;
-
-            // Fill from bypass queue
-            while filled < samples_needed && !self.bypass_audio_queue.is_empty() {
-                frame.samples[filled] = self.bypass_audio_queue.pop_front().unwrap();
-                filled += 1;
-            }
-
-            // Fill remaining with silence if needed
-            while filled < samples_needed {
-                frame.samples[filled] = 0.0;
-                filled += 1;
-            }
-
-            frame.speech_type = if filled == samples_needed {
-                SpeechType::Normal
-            } else {
-                SpeechType::Expand
-            };
-            frame.vad_activity = filled > 0;
-
-            return Ok(frame);
-        }
-
-        // Normal NetEQ processing continues below...
 
         let mut frame = AudioFrame::new(
             self.config.sample_rate,
@@ -614,29 +546,7 @@ impl NetEq {
         while filled < samples_needed {
             match self.packet_buffer.get_next_packet() {
                 Some(packet) => {
-                    // Decode based on payload type if we have a decoder; otherwise treat as raw f32 PCM.
-                    let packet_samples: Vec<f32> = if let Some(dec) =
-                        self.decoders.get_mut(&packet.header.payload_type)
-                    {
-                        match dec.decode(&packet.payload) {
-                            Ok(pcm) => pcm,
-                            Err(e) => {
-                                log::error!(
-                                    "decoder error for pt {}: {:?}",
-                                    packet.header.payload_type,
-                                    e
-                                );
-                                Vec::new()
-                            }
-                        }
-                    } else {
-                        // Fallback: raw f32 PCM
-                        let mut v = Vec::with_capacity(packet.payload.len() / 4);
-                        for chunk in packet.payload.chunks_exact(4) {
-                            v.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-                        }
-                        v
-                    };
+                    let packet_samples = decode_raw_f32_payload(&packet.payload);
 
                     let available = packet_samples.len();
                     let need_now = samples_needed - filled;
@@ -907,14 +817,13 @@ impl NetEq {
             + self.leftover_time_stretched_samples.len()
     }
 
-    /// Register a decoder for a given RTP payload type.
-    pub fn register_decoder(
-        &mut self,
-        payload_type: u8,
-        decoder: Box<dyn crate::codec::AudioDecoder + Send>,
-    ) {
-        self.decoders.insert(payload_type, decoder);
-    }
+}
+
+fn decode_raw_f32_payload(payload: &[u8]) -> Vec<f32> {
+    payload
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect()
 }
 
 // Simple random number generator for testing

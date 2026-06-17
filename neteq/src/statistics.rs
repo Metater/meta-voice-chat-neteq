@@ -182,7 +182,7 @@ pub mod q14 {
 
 use crate::neteq::Operation;
 use serde::{Deserialize, Serialize};
-use web_time::{Duration, Instant};
+use std::time::{Duration, Instant};
 
 /// Decode operation counters for real-time monitoring
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

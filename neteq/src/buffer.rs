@@ -17,7 +17,7 @@
  */
 
 use std::collections::VecDeque;
-use web_time::Duration;
+use std::time::Duration;
 
 use crate::statistics::StatisticsCalculator;
 use crate::{AudioPacket, Result};

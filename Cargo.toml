@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-fdaf-aec = "0.1.0"
 neteq = { path = "neteq", default-features = false }
 
 [lib]
