@@ -1,21 +1,22 @@
 use neteq::{AudioPacket, NetEq, NetEqConfig, RtpHeader};
+use std::mem::{align_of, size_of};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn create_neteq(
-    sample_rate: u32,
-    channels: u8,
+    sample_rate: i32,
+    channels: i32,
     max_packets_in_buffer: i32,
-    max_delay_ms: u32,
-    min_delay_ms: u32,
-    additional_delay_ms: u32,
+    max_delay_ms: i32,
+    min_delay_ms: i32,
+    additional_delay_ms: i32,
 ) -> *mut NetEq {
     let config = NetEqConfig {
-        sample_rate,
-        channels,
-        max_packets_in_buffer: max_packets_in_buffer as usize,
-        max_delay_ms,
-        min_delay_ms,
-        additional_delay_ms,
+        sample_rate: to_u32(sample_rate),
+        channels: to_u8(channels),
+        max_packets_in_buffer: to_usize(max_packets_in_buffer),
+        max_delay_ms: to_u32(max_delay_ms),
+        min_delay_ms: to_u32(min_delay_ms),
+        additional_delay_ms: to_u32(additional_delay_ms),
         ..Default::default()
     };
 
@@ -41,11 +42,19 @@ pub extern "C" fn insert_packet(
     timestamp: u32,
     samples: *mut f32,
     samples_len: i32,
-    sample_rate: u32,
-    channels: u8,
-    duration_ms: u32,
+    sample_rate: i32,
+    channels: i32,
+    duration_ms: i32,
 ) {
     if ptr.is_null() {
+        return;
+    }
+
+    if samples.is_null() || samples_len <= 0 {
+        return;
+    }
+
+    if !is_aligned_for_f32(samples) {
         return;
     }
 
@@ -53,26 +62,20 @@ pub extern "C" fn insert_packet(
 
     let header = RtpHeader::new(sequence_number, timestamp, 12345, 96, false);
 
-    let mut payload = Vec::new();
-
-    // Generate sine wave audio data
-    // let frequency1 = 659.26; // E5 note
-    // let frequency2 = 523.25; // C5 note
-
-    // for i in 0..samples {
-    //     let t = (timestamp as f32 + i as f32) / sample_rate as f32;
-    //     let sample = (2.0 * std::f32::consts::PI * frequency1 * t).sin() * 0.1;
-    //     let sample2 = (2.0 * std::f32::consts::PI * frequency2 * t).sin() * 0.1;
-    //     let combined_sample = sample + sample2;
-    //     payload.extend_from_slice(&combined_sample.to_le_bytes());
-    // }
-
-    let samples_slice = unsafe { std::slice::from_raw_parts(samples, samples_len as usize) };
+    let samples_len = samples_len as usize;
+    let mut payload = Vec::with_capacity(samples_len.saturating_mul(size_of::<f32>()));
+    let samples_slice = unsafe { std::slice::from_raw_parts(samples, samples_len) };
     for &sample in samples_slice {
         payload.extend_from_slice(&sample.to_le_bytes());
     }
 
-    let packet = AudioPacket::new(header, payload, sample_rate, channels, duration_ms);
+    let packet = AudioPacket::new(
+        header,
+        payload,
+        to_u32(sample_rate),
+        to_u8(channels),
+        to_u32(duration_ms),
+    );
 
     let _ = neteq.insert_packet(packet);
 }
@@ -84,6 +87,10 @@ pub extern "C" fn get_audio(ptr: *mut NetEq, samples: *mut f32, samples_len: i32
     }
 
     if samples.is_null() || samples_len <= 0 {
+        return 0;
+    }
+
+    if !is_aligned_for_f32(samples) {
         return 0;
     }
 
@@ -103,11 +110,31 @@ pub extern "C" fn get_audio(ptr: *mut NetEq, samples: *mut f32, samples_len: i32
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn current_buffer_size_ms(ptr: *mut NetEq) -> u32 {
+pub extern "C" fn current_buffer_size_ms(ptr: *mut NetEq) -> i32 {
     if ptr.is_null() {
         return 0;
     }
 
     let neteq = unsafe { &mut *ptr };
-    neteq.current_buffer_size_ms()
+    saturating_i32_from_u32(neteq.current_buffer_size_ms())
+}
+
+fn to_u8(value: i32) -> u8 {
+    value.clamp(0, u8::MAX as i32) as u8
+}
+
+fn to_u32(value: i32) -> u32 {
+    value.max(0) as u32
+}
+
+fn to_usize(value: i32) -> usize {
+    value.max(0) as usize
+}
+
+fn saturating_i32_from_u32(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
+}
+
+fn is_aligned_for_f32(ptr: *const f32) -> bool {
+    (ptr as usize) % align_of::<f32>() == 0
 }
