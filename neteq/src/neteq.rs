@@ -360,7 +360,7 @@ impl NetEq {
         // Update frame timestamp
         self.frame_timestamp = self
             .frame_timestamp
-            .wrapping_add((frame.samples_per_channel * self.config.channels as usize) as u32);
+            .wrapping_add(frame.samples_per_channel as u32);
 
         // Update statistics
         self.statistics
@@ -439,6 +439,8 @@ impl NetEq {
     fn get_decision(&mut self) -> Result<Operation> {
         // Update buffer level filter first
         let current_buffer_samples = self.current_buffer_size_samples();
+        let output_frame_size_samples =
+            self.output_frame_size_samples / self.config.channels as usize;
         let target_delay_ms: u32 = self.delay_manager.target_delay_ms();
 
         // Filter buffer level like WebRTC's FilterBufferLevel method
@@ -473,8 +475,8 @@ impl NetEq {
             return Ok(Operation::Expand);
         }
 
-        if current_buffer_samples < self.output_frame_size_samples * 3 / 2
-            && current_buffer_samples >= self.output_frame_size_samples / 2
+        if current_buffer_samples < output_frame_size_samples
+            && current_buffer_samples >= output_frame_size_samples / 2
             && self.consecutive_expands == 0
         {
             self.consecutive_expands = self.consecutive_expands.saturating_add(1);
@@ -482,7 +484,7 @@ impl NetEq {
         }
 
         // Check if we have packets
-        if current_buffer_samples < self.output_frame_size_samples {
+        if current_buffer_samples < output_frame_size_samples {
             self.consecutive_expands = self.consecutive_expands.saturating_add(1);
             return Ok(Operation::Expand);
         }
@@ -512,7 +514,7 @@ impl NetEq {
 
         // Preemptive expand: below low limit (requires ~30ms of audio)
         if buffer_level_samples < low_limit as usize
-            && current_buffer_samples >= self.output_frame_size_samples * 3
+            && current_buffer_samples >= output_frame_size_samples * 3
         {
             return Ok(Operation::PreemptiveExpand);
         }
@@ -591,7 +593,7 @@ impl NetEq {
 
     fn decode_accelerate(&mut self, frame: &mut AudioFrame, fast_mode: bool) -> Result<()> {
         if !self.config.for_test_no_time_stretching {
-            let available_samples = self.current_buffer_size_samples();
+            let available_samples = self.current_buffer_size_interleaved_samples();
             let mut output_len: usize = 0;
             let mut required_samples: usize = 0;
             for i in (1..=3).rev() {
@@ -611,14 +613,18 @@ impl NetEq {
             let mut extended_frame = AudioFrame::new(
                 self.config.sample_rate,
                 self.config.channels,
-                required_samples,
+                required_samples / self.config.channels as usize,
             );
 
             self.decode_normal(&mut extended_frame)?;
 
             // Will output up to 30ms output
             let mut output =
-                AudioFrame::new(self.config.sample_rate, self.config.channels, output_len);
+                AudioFrame::new(
+                    self.config.sample_rate,
+                    self.config.channels,
+                    output_len / self.config.channels as usize,
+                );
 
             // Apply accelerate algorithm
             let _result =
@@ -805,18 +811,22 @@ impl NetEq {
     }
 
     pub fn current_buffer_size_ms(&self) -> u32 {
-        // Use total content duration instead of timestamp span
-        // This handles cases where packets have close/identical timestamps
+        // Convert from per-channel samples. Packet payloads and leftovers are
+        // stored as interleaved samples, but audio duration is measured per channel.
         self.current_buffer_size_samples() as u32 * 1000 / self.config.sample_rate
     }
 
-    /// Get current buffer size in samples
+    /// Get current buffer size in samples per channel.
     pub fn current_buffer_size_samples(&self) -> usize {
+        self.current_buffer_size_interleaved_samples() / self.config.channels as usize
+    }
+
+    /// Get current buffer size in interleaved samples.
+    fn current_buffer_size_interleaved_samples(&self) -> usize {
         self.packet_buffer.num_samples_in_buffer()
             + self.leftover_samples.len()
             + self.leftover_time_stretched_samples.len()
     }
-
 }
 
 fn decode_raw_f32_payload(payload: &[u8]) -> Vec<f32> {
@@ -858,6 +868,35 @@ mod tests {
         AudioPacket::new(header, payload, 16000, 1, duration_ms)
     }
 
+    fn create_raw_f32_packet(
+        seq: u16,
+        ts: u32,
+        sample_rate: u32,
+        channels: u8,
+        duration_ms: u32,
+    ) -> AudioPacket {
+        let header = RtpHeader::new(seq, ts, 12345, 96, false);
+        let samples_per_channel = sample_rate as usize * duration_ms as usize / 1000;
+        let total_samples = samples_per_channel * channels as usize;
+        let mut payload = Vec::with_capacity(total_samples * std::mem::size_of::<f32>());
+
+        for i in 0..total_samples {
+            let sample = i as f32 / total_samples as f32;
+            payload.extend_from_slice(&sample.to_le_bytes());
+        }
+
+        AudioPacket::new(header, payload, sample_rate, channels, duration_ms)
+    }
+
+    fn stereo_48k_config() -> NetEqConfig {
+        NetEqConfig {
+            sample_rate: 48000,
+            channels: 2,
+            for_test_no_time_stretching: true,
+            ..NetEqConfig::default()
+        }
+    }
+
     #[test]
     fn test_neteq_creation() {
         let config = NetEqConfig::default();
@@ -876,6 +915,53 @@ mod tests {
         neteq.insert_packet(packet).unwrap();
 
         assert!(!neteq.is_empty());
+    }
+
+    #[test]
+    fn test_stereo_10ms_packet_counts_as_10ms() {
+        let mut neteq = NetEq::new(stereo_48k_config()).unwrap();
+        let packet = create_raw_f32_packet(1, 0, 48000, 2, 10);
+
+        neteq.insert_packet(packet).unwrap();
+
+        assert_eq!(neteq.current_buffer_size_ms(), 10);
+        assert_eq!(neteq.current_buffer_size_samples(), 480);
+
+        let frame = neteq.get_audio().unwrap();
+
+        assert_eq!(frame.sample_rate, 48000);
+        assert_eq!(frame.channels, 2);
+        assert_eq!(frame.samples_per_channel, 480);
+        assert_eq!(frame.samples.len(), 960);
+        assert_eq!(frame.speech_type, SpeechType::Normal);
+        assert_eq!(neteq.current_buffer_size_ms(), 0);
+    }
+
+    #[test]
+    fn test_stereo_20ms_packet_splits_into_two_10ms_frames() {
+        let mut neteq = NetEq::new(stereo_48k_config()).unwrap();
+        let packet = create_raw_f32_packet(1, 0, 48000, 2, 20);
+
+        neteq.insert_packet(packet).unwrap();
+
+        assert_eq!(neteq.current_buffer_size_ms(), 20);
+        assert_eq!(neteq.current_buffer_size_samples(), 960);
+
+        let first_frame = neteq.get_audio().unwrap();
+
+        assert_eq!(first_frame.samples_per_channel, 480);
+        assert_eq!(first_frame.samples.len(), 960);
+        assert_eq!(first_frame.speech_type, SpeechType::Normal);
+        assert_eq!(neteq.current_buffer_size_ms(), 10);
+        assert_eq!(neteq.current_buffer_size_samples(), 480);
+
+        let second_frame = neteq.get_audio().unwrap();
+
+        assert_eq!(second_frame.samples_per_channel, 480);
+        assert_eq!(second_frame.samples.len(), 960);
+        assert_eq!(second_frame.speech_type, SpeechType::Normal);
+        assert_eq!(neteq.current_buffer_size_ms(), 0);
+        assert_eq!(neteq.current_buffer_size_samples(), 0);
     }
 
     #[test]
@@ -1347,15 +1433,15 @@ mod tests {
         //     neteq.insert_packet(packet).unwrap();
         // }
 
-        // Expect 4 Normal operation
-        for _ in 0..4 {
+        // Expect all 5 real 10 ms frames to play normally.
+        for _ in 0..5 {
             let _ = neteq.get_audio().unwrap();
             assert_eq!(neteq.last_operation, Operation::Normal);
         }
 
-        // Expect ExpandStart
+        // Expect Expand when there is no complete frame left.
         let _ = neteq.get_audio().unwrap();
-        assert_eq!(neteq.last_operation, Operation::ExpandStart);
+        assert_eq!(neteq.last_operation, Operation::Expand);
 
         // Expect Expands while the buffer is empty
         for _ in 0..100 {
@@ -1493,15 +1579,15 @@ mod tests {
         insert_audio(&mut neteq, 50);
         reset_filtered_level(&mut neteq);
 
-        // Drain to normal
-        for _ in 0..4 {
+        // Drain all complete frames normally.
+        for _ in 0..5 {
             let _ = neteq.get_audio().unwrap();
             assert_eq!(neteq.last_operation, Operation::Normal);
         }
 
-        // ExpandStart
+        // Expand once no complete frame remains.
         let _ = neteq.get_audio().unwrap();
-        assert_eq!(neteq.last_operation, Operation::ExpandStart);
+        assert_eq!(neteq.last_operation, Operation::Expand);
 
         // Run 600+ expands with no packets arriving (simulates prolonged disconnect).
         // The safety valve at 600 should fire, but we stay in Expand because
@@ -1542,13 +1628,13 @@ mod tests {
         insert_audio(&mut neteq, 50);
         reset_filtered_level(&mut neteq);
 
-        for _ in 0..4 {
+        for _ in 0..5 {
             let _ = neteq.get_audio().unwrap();
         }
 
-        // ExpandStart
+        // Expand once no complete frame remains.
         let _ = neteq.get_audio().unwrap();
-        assert_eq!(neteq.last_operation, Operation::ExpandStart);
+        assert_eq!(neteq.last_operation, Operation::Expand);
 
         // Run 650 expands to exceed the 600 threshold
         for _ in 0..650 {
