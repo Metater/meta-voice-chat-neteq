@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 fdaf-aec = "0.1.0"
-neteq = "0.7.1"
+neteq = { path = "neteq", default-features = false }
 
 [lib]
 crate-type = ["cdylib"]

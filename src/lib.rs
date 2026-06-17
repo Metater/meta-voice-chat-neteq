@@ -1,44 +1,4 @@
-use fdaf_aec::FdafAec;
 use neteq::{AudioPacket, NetEq, NetEqConfig, RtpHeader};
-
-#[unsafe(no_mangle)]
-pub extern "C" fn create_fdaf_aec(fft_size: usize, step_size: f32) -> *mut FdafAec {
-    Box::into_raw(Box::new(FdafAec::new(fft_size, step_size)))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn free_fdaf_aec(ptr: *mut FdafAec) {
-    if !ptr.is_null() {
-        unsafe {
-            let _ = Box::from_raw(ptr);
-        }
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn process_fdaf_aec(ptr: *mut FdafAec, far_end_raw: *mut f32, mic_raw: *mut f32, frame_size: i32) -> i32 {
-    if ptr.is_null() {
-        return 0;
-    }
-
-    if far_end_raw.is_null() || mic_raw.is_null() || frame_size <= 0 {
-        return 0;
-    }
-
-    let aec = unsafe { &mut *ptr };
-
-    let far_end_frame = unsafe { std::slice::from_raw_parts(far_end_raw, frame_size as usize) };
-    let mic_frame = unsafe { std::slice::from_raw_parts(mic_raw, frame_size as usize) };
-
-    let output = aec.process(far_end_frame, mic_frame);
-
-    let samples_to_copy = std::cmp::min(output.len() as i32, frame_size);
-    unsafe {
-        std::ptr::copy_nonoverlapping(output.as_ptr(), mic_raw, samples_to_copy as usize);
-    }
-
-    samples_to_copy
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn create_neteq(
